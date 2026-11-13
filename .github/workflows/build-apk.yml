@@ -20,19 +20,25 @@ concurrency:
   group: build-apk-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  pick:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          ABI: ${{ inputs.abi || 'arm64-v8a' }}
+        run: |
+          all='[{"abi":"arm64-v8a","target":"aarch64-linux-android"},{"abi":"armeabi-v7a","target":"armv7-linux-androideabi"},{"abi":"x86","target":"i686-linux-android"},{"abi":"x86_64","target":"x86_64-linux-android"}]'
+          if [ "$ABI" = "todas" ]; then m="$all"; else m=$(echo "$all" | jq -c --arg a "$ABI" 'map(select(.abi==$a))'); fi
+          echo "matrix={\"include\":$m}" >> "$GITHUB_OUTPUT"
   apk:
+    needs: pick
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { abi: arm64-v8a, target: aarch64-linux-android }
-          - { abi: armeabi-v7a, target: armv7-linux-androideabi }
-          - { abi: x86, target: i686-linux-android }
-          - { abi: x86_64, target: x86_64-linux-android }
+      matrix: ${{ fromJSON(needs.pick.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
-    # Só as arquiteturas pedidas (push = arm64-v8a).
-    if: ${{ (inputs.abi || 'arm64-v8a') == 'todas' || (inputs.abi || 'arm64-v8a') == matrix.abi }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
