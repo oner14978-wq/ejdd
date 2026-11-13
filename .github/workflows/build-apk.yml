@@ -1,9 +1,8 @@
 name: build-apk
-# Compila o APK do Starling no GitHub e deixa para baixar em "Artifacts".
-# Uso: Actions > build-apk > Run workflow (escolha a arquitetura), ou faça push na branch main/master.
-# O APK sai assinado com uma chave de teste gerada na hora (instala, mas não atualiza por cima de
-# outro APK assinado com chave diferente). Sem segredos, sem publicar release.
-# Comandos copiados de .github/workflows/android.yml do projeto; NÃO foi executado por mim.
+# Compila o APK a partir dos ZIPs do projeto que estao na raiz do repositorio
+# (ex.: cat-launcher-corrigido-parte-1.zip, -2.zip, -3.zip, ou o hshs.zip).
+# Os zips sao extraidos na hora, na mesma pasta; nao precisa subir os arquivos soltos.
+# Uso: Actions > build-apk > Run workflow. O APK fica em Artifacts.
 on:
   workflow_dispatch:
     inputs:
@@ -12,13 +11,8 @@ on:
         type: choice
         default: arm64-v8a
         options: [arm64-v8a, armeabi-v7a, x86, x86_64, todas]
-  push:
-    branches: [main, master]
 permissions:
   contents: read
-concurrency:
-  group: build-apk-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   pick:
     runs-on: ubuntu-latest
@@ -41,6 +35,25 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+      - name: Extrair os zips do projeto
+        run: |
+          mkdir -p "$RUNNER_TEMP/proj"
+          shopt -s nullglob
+          zips=(*.zip)
+          [ ${#zips[@]} -gt 0 ] || { echo "Nenhum .zip na raiz do repositorio. Envie os zips do projeto."; exit 1; }
+          for z in "${zips[@]}"; do echo "Extraindo $z"; unzip -q -o "$z" -d "$RUNNER_TEMP/proj"; done
+          # zips de partes dentro de um zip (como o hshs.zip)
+          for i in 1 2; do
+            find "$RUNNER_TEMP/proj" -name '*parte*.zip' -print0 | while IFS= read -r -d '' z; do
+              unzip -q -o "$z" -d "$(dirname "$z")" && rm "$z"
+            done
+          done
+          script=$(find "$RUNNER_TEMP/proj" -path '*/packaging/android/build_apk.py' | head -1)
+          [ -n "$script" ] || { echo "build_apk.py nao encontrado: faltam partes do projeto?"; find "$RUNNER_TEMP/proj" -maxdepth 2 | head -30; exit 1; }
+          src=$(dirname "$(dirname "$(dirname "$script")")")
+          echo "Projeto em: $src"
+          echo "SRC=$src" >> "$GITHUB_ENV"
+          test -f "$src/Cargo.toml" || { echo "Cargo.toml nao encontrado em $src"; exit 1; }
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -48,24 +61,22 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - name: Instalar build-tools, plataforma e NDK
+      - name: Instalar SDK e NDK
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
             "build-tools;35.0.0" "platforms;android-36" "ndk;28.2.13676358" > /dev/null
-      - name: Instalar Rust para Android e cargo-ndk
+      - name: Instalar Rust e cargo-ndk
         run: |
           rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
           rustup default stable
           cargo install cargo-ndk --version 3.5.4 --locked
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: android-${{ matrix.abi }}
       - name: Compilar o APK
+        working-directory: ${{ env.SRC }}
         run: python packaging/android/build_apk.py --abi "${{ matrix.abi }}" --profile quick --preview
       - uses: actions/upload-artifact@v4
         with:
           name: starling-apk-${{ matrix.abi }}
-          path: target/android/starling-*.apk
+          path: ${{ env.SRC }}/target/android/starling-*.apk
           if-no-files-found: error
           retention-days: 30
           
