@@ -1,0 +1,65 @@
+name: build-apk
+# Compila o APK do Starling no GitHub e deixa para baixar em "Artifacts".
+# Uso: Actions > build-apk > Run workflow (escolha a arquitetura), ou faça push na branch main/master.
+# O APK sai assinado com uma chave de teste gerada na hora (instala, mas não atualiza por cima de
+# outro APK assinado com chave diferente). Sem segredos, sem publicar release.
+# Comandos copiados de .github/workflows/android.yml do projeto; NÃO foi executado por mim.
+on:
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: Arquitetura (arm64-v8a para quase todo celular)
+        type: choice
+        default: arm64-v8a
+        options: [arm64-v8a, armeabi-v7a, x86, x86_64, todas]
+  push:
+    branches: [main, master]
+permissions:
+  contents: read
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  apk:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { abi: arm64-v8a, target: aarch64-linux-android }
+          - { abi: armeabi-v7a, target: armv7-linux-androideabi }
+          - { abi: x86, target: i686-linux-android }
+          - { abi: x86_64, target: x86_64-linux-android }
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    # Só as arquiteturas pedidas (push = arm64-v8a).
+    if: ${{ (inputs.abi || 'arm64-v8a') == 'todas' || (inputs.abi || 'arm64-v8a') == matrix.abi }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Instalar build-tools, plataforma e NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "build-tools;35.0.0" "platforms;android-36" "ndk;28.2.13676358" > /dev/null
+      - name: Instalar Rust para Android e cargo-ndk
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+          cargo install cargo-ndk --version 3.5.4 --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android-${{ matrix.abi }}
+      - name: Compilar o APK
+        run: python packaging/android/build_apk.py --abi "${{ matrix.abi }}" --profile quick --preview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starling-apk-${{ matrix.abi }}
+          path: target/android/starling-*.apk
+          if-no-files-found: error
+          retention-days: 30
+          
